@@ -1,0 +1,19 @@
+# =======================================================
+# PowerShell Project - Git Ignore Rules
+# =======================================================
+
+# --- System & Temporary Files ---
+*.log
+log/
+temp/
+
+# --- Work in Progress / Drafts ---
+z_uncomplete/
+
+# --- IDE Settings (Visual Studio Code) ---
+.vscode/
+*.code-workspace
+
+# --- Security & Sensitive Data (CRITICAL) ---
+# Prevent uploading folders/files containing passwords or sensitive info
+data/
