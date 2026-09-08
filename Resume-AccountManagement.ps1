@@ -1,3 +1,32 @@
+<#
+.SYNOPSIS
+    Automates the detection and remediation of disabled Idira Privilege Cloud accounts.
+
+.DESCRIPTION
+    Resume-AccountManagement authenticates to a Idira tenant, retrieves 
+    all accounts assigned to a specified Safe via paginated REST API calls, and inspects 
+    their secret management state. 
+    
+    If an account's automatic secret management is disabled ($false) and its last modified 
+    timestamp exceeds 90 days (calculated in Unix epoch seconds), the function issues a 
+    PATCH request to re-enable automatic management.
+
+.PARAMETER SubDomain
+    The CyberArk tenant subdomain (e.g., 'tenant' for tenant.privilegecloud.cyberark.cloud).
+    Must not be empty.
+
+.PARAMETER Username
+    The identity account executing the API requests. Requires administrative privileges 
+    to query and update vault accounts.
+
+.PARAMETER Safe
+    The target Safe name to inspect. Automatically URL-encoded to prevent OData injection.
+
+.EXAMPLE
+    Resume-AccountManagement -SubDomain "company" -Username "api_admin" -SafeName "Linux-Servers-Safe" -Verbose
+
+#>
+
 param(
     [Parameter(Mandatory=$true)]
     [ValidateNotNullOrEmpty()]
@@ -25,7 +54,6 @@ function Connect-Identity {
 
     $currentEndpoint = "https://$subDomain.cyberark.cloud/shell/api/endpoint/$subDomain"
     $identityAddress = (Invoke-RestMethod -URI $currentEndpoint -Method GET).fqdn
-    #$identityTenantID = $identityAddress.split('.')[0]
 
     try {
         $URI = "https://$identityAddress/oauth2/platformtoken"
@@ -35,86 +63,6 @@ function Connect-Identity {
     }
     catch {
         throw "Unexpected error from $($URI): $($_.Exception.Message) - $($_.ErrorDetails.Message)"
-    }
-}
-
-function Connect-IdentitySecure {
-    <#
-    .SYNOPSIS
-        Authenticates to CyberArk Identity using Client Credentials to obtain an OAuth2 token.
-    #>
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory=$true)]
-        [ValidatePattern('^[a-zA-Z0-9-]+$')]
-        [string]$subDomain,    
-
-        [Parameter(Mandatory=$true)]
-        [ValidateNotNullOrEmpty()]
-        [string]$userName,
-
-        [Parameter(Mandatory=$true)]
-        [securestring]$password
-    )
-
-    try {
-        
-        $currentEndpoint = "https://$subDomain.cyberark.cloud/shell/api/endpoint/$subDomain"
-        $identityAddress = (Invoke-RestMethod -URI $currentEndpoint -Method GET).fqdn
-        $identityTenantID = $identityAddress.split('.')[0]
-        
-        
-        $currentEndpoint = "https://$identityAddress/Security/StartAuthentication"
-        $startAuthBody = ConvertTo-Json -InputObject @{
-            TenantId = $identityTenantID
-            Version = "1.0"
-            User = $userName
-        } -Compress
-
-        $startAuthHeaders = @{ "X-IDAP-NATIVE-CLIENT" = $true }
-        
-        $startAuthResponse = Invoke-RestMethod -URI $currentEndpoint -Method Post -Headers $startAuthHeaders -Body $startAuthBody
-
-        $mechanismId = $null
-        foreach ($challenge in $startAuthResponse.Result.Challenges) {
-            foreach ($mechanism in $challenge.Mechanisms) {
-                if ($mechanism.PromptSelectMech -eq "Password") {
-                    $mechanismId = $mechanism.MechanismId
-                    break
-                }
-            }
-            if ($mechanismId) { break }
-        }
-        
-        if (-not $mechanismId) {
-            throw "Password mechanism not found."
-        }
-
-        $currentEndpoint = "https://$identityAddress/Security/AdvanceAuthentication"
-        $plainTextPassword = [System.Net.NetworkCredential]::new('', $password).Password
-        
-        $advAuthBody = ConvertTo-Json -InputObject @{
-            TenantId = $identityTenantID
-            SessionId = $startAuth.Result.SessionId
-            MechanismId = $mechanismId
-            Action = "Answer"
-            Answer = $plainTextPassword
-        } -Compress
-
-        $advAuthResponse = Invoke-RestMethod -URI $currentEndpoint -Method Post -Body $advAuthBody
-        return $advAuthResponse.Result.Token
-
-    }
-    catch {
-        $errorMsg = if ($_.ErrorDetails) { $_.ErrorDetails.Message } else { $_.Exception.Message }
-        throw "Authentication failed at $currentEndpoint : $errorMsg"
-    }
-    finally {
-        if ($null -ne $plainTextPassword) {
-            $plainTextPassword = $null
-            $advAuthBody = $null
-            [System.GC]::Collect()
-        }
     }
 }
 
@@ -204,42 +152,6 @@ function Get-Accounts {
     }
     finally {
         if ($SkipCertificateCheck) { [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null }
-    }
-}
-
-function Send-BulkActions {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory=$true)]
-        [ValidateNotNullOrEmpty()]
-        [ValidatePattern('^https://')]
-        [string]$rootURI,
-
-        [Parameter(Mandatory=$true)]
-        [hashtable]$Headers,
-
-        [Parameter(Mandatory=$true)]
-        [ValidateSet("Change", "Verify", "Reconcile", "Resume", "Unlock", "Delete")]
-        [string]$action,
-
-        [Parameter(Mandatory=$true)]
-        [ValidateNotNull()]
-        [System.Collections.Generic.List[string]]$IdList
-    )
-
-    $targetEndpoint = "$rootURI/accounts/$action/bulk"
-    
-    $body = ConvertTo-Json -InputObject @{
-        accountIds              = $IdList.ToArray()
-        deleteOnlyPrivateSshKey = $false
-    } -Compress
-    
-    try {
-        $response = Invoke-RestMethod -Uri $targetEndpoint -Method 'POST' -Headers $Headers -Body $body -ErrorAction Stop
-        Write-Verbose "Batch successful."
-    }
-    catch {
-        throw "Failed to process batch at $targetEndpoint. Error: $_"
     }
 }
 
