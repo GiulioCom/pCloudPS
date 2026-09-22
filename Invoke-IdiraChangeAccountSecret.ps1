@@ -384,13 +384,16 @@ foreach ($account in $accounts.value) {
     if ($account.secretManagement.automaticManagementEnabled -eq $true -and
         $account.secretManagement.lastModifiedTime -lt $thresholdEpoch){
         # Resume the account
+        $AccountId = $account.id
+        $AccountName = $account.name
+        
         try {
-            $Uri = [System.Uri]::new($rootURI, "API/Accounts/$($account.id)/Change")
-            $null = Invoke-RestMethod -Uri $Uri -Method Patch -Headers $headers -Body $enAccountBody
-            Write-Log "Account $($account.name): successfully sent password change." INFO
+            $Uri = [System.Uri]::new($rootURI, "API/Accounts/$AccountId/Change")
+            $null = Invoke-RestMethod -Uri $Uri -Method Post -Headers $headers
+            Write-Log "Account '$AccountName': successfully sent password change." INFO
         }
         catch {
-            Write-Log "Failed to trigger password change for account '$AccountId'. Details: $($_.Exception.Message)" ERROR
+            Write-Log "Failed to trigger password change for account '$AccountName'. Details: $($_.Exception.Message)" ERROR
         }
     }
 }
