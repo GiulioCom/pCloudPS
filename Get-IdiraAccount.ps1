@@ -51,6 +51,27 @@ function Protect-CsvField {
     return $Value
 }
 
+function ConvertFrom-Epoch {
+<#
+.SYNOPSIS
+    Converts Unix epoch timestamp integers to formatted ISO-8601 date strings.
+.DESCRIPTION
+    Uses .NET DateTimeOffset static methods to transform Unix epoch seconds into 
+    human-readable dates prior to CSV export, avoiding locale parsing errors.
+#>
+
+    [CmdletBinding()]
+    param(
+        [Parameter()]
+        [nullable[long]]$Epoch
+    )
+
+    if ($null -eq $Epoch -or $Epoch -eq 0) { return $null }
+
+    # Native .NET method handles UTC and local offset conversions instantly
+    return [DateTimeOffset]::FromUnixTimeSeconds($Epoch).LocalDateTime.ToString('yyyy-MM-dd HH:mm:ss')
+}
+
 function Connect-Identity {
     <#
     .SYNOPSIS
@@ -171,166 +192,97 @@ function Get-Accounts {
         [string]::Empty 
     }
 
-<#
-    $paginationList = [System.Collections.Generic.List[string]]::new()
-    $paginationList.Add("offset=$Offset")
-    $paginationList.Add("limit=$Limit")
-    $paginationQuery = [string]::Join('&', $paginationList)
-
-
-    $fullQuery = if (-not [string]::IsNullOrWhiteSpace($searchQuery)) {
-        "$paginationQuery&$searchQuery"
-    } else {
-        $paginationQuery
-    }
-#>
-<#
-    $baseEndpoint = [System.Uri]::new($RootUri, 'API/Accounts')
-    $uriBuilder   = [System.UriBuilder]::new($baseEndpoint)
-    $uriBuilder.Query = $fullQuery    
-    
-    $URI = $uriBuilder.Uri
-#>
     $allAccounts = [System.Collections.Generic.List[object]]::new()
-    #$totalCount = 0
 
     $hasMorePages = $true
     $nextUri = $null
 
-#    try {
-        
-        do {
-            # Determine request URI based on pagination state
-            if ($null -eq $nextUri) {
-                # Construct initial or manual offset request
-                $pageQuery = "offset=$offset&limit=$Limit"
-                $fullQuery = if ($searchQuery) { 
-                        "$pageQuery&$searchQuery"
-                    } else { 
-                        $pageQuery 
-                    }
-
-                $baseEndpoint = [System.Uri]::new($RootUri, 'API/Accounts')
-                $uriBuilder = [System.UriBuilder]::new($baseEndpoint)
-                $uriBuilder.Query = $fullQuery
-                $targetUri = $uriBuilder.Uri
-            }
-            else {
-                $targetUri = $nextUri
-            }
-
-            try {
-                if ($SkipCertificateCheck.IsPresent) { [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true } }
-                Write-Verbose "Status: Get-Accounts | URI: $targetUri"
-                $response = Invoke-RestMethod -Uri $targetUri -Headers $Headers -Method Get
-            }
-            catch {
-                $errorMsg = if ($_.ErrorDetails) {
-                        $_.ErrorDetails.Message
-                    } else {
-                        $_.Exception.Message
-                    }
-                throw "Unexpected error communicating with $($targetUri): $errorMsg"
-            }
-            finally {
-                if ($SkipCertificateCheck.IsPresent) { [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null }
-            }
-            
-
-            $items = $response.value
-            $itemCount = if ($null -ne $items) { $items.Count } else { 0 }
-
-            if ($itemCount -gt 0) {
-                $allAccounts.AddRange([object[]]$items)
-                #$items | ForEach-Object { $_ }
-                #$totalStreamed += $itemCount
-            }
-
-            # 3. Dynamic API Bug Recovery Logic
-            if (-not [string]::IsNullOrWhiteSpace($response.nextLink)) {
-                # CASE 1 & 2: API provided nextLink. Check if search query was stripped.
-                $cleanNext  = $response.nextLink.TrimStart('/')
-                $parsedNext = [System.Uri]::new($RootUri, $cleanNext)
-                $builder    = [System.UriBuilder]::new($parsedNext)
-                $existingQ  = $builder.Query.TrimStart('?')
-
-                # If search criteria exist but are missing from nextLink, re-inject them
-                if ($searchQuery -and ($existingQ -notmatch '(search|filter|savedfilter)=')) {
-                    $builder.Query = if ($existingQ) { "$existingQ&$searchQuery" } else { $searchQuery }
+    do {
+        # Determine request URI based on pagination state
+        if ($null -eq $nextUri) {
+            # Construct initial or manual offset request
+            $pageQuery = "offset=$offset&limit=$Limit"
+            $fullQuery = if ($searchQuery) { 
+                    "$pageQuery&$searchQuery"
+                } else { 
+                    $pageQuery 
                 }
 
-                $nextUri = $builder.Uri
-                $offset += $itemCount
-            }
-            elseif ($itemCount -eq $Limit) {
-                # CASE 3: API bug omitted nextLink entirely, but record count matches page limit.
-                # Force manual offset iteration.
-                $offset += $Limit
-                $nextUri = $null # Triggers manual URI construction on next iteration
-            }
-            else {
-                # Reached end of dataset (itemCount < Limit and no nextLink)
-                $hasMorePages = $false
-            }
-
-            # Break loop if 0 records returned on a manual page check
-            if ($itemCount -eq 0) {
-                $hasMorePages = $false
-            }
-
-        } while ($hasMorePages)
-
-
-<#
-        do {
-            Write-Verbose "Status: Get-Accounts | URI: $URI"
-            $response = Invoke-RestMethod -Uri $URI -Method GET -Headers $headers
-                        
-            if ($totalCount -eq 0 -and $null -ne $response.count) {
-                $totalCount = $response.count
-                Write-Verbose "Status: Get-Accounts | Retrieving $totalCount accounts"
-            }
-
-            if ($null -ne $response.value) {
-                $allAccounts.AddRange($response.value)
-            }
-
-            if (-not [string]::IsNullOrWhiteSpace($response.nextLink)) {
-                
-                $nextBaseUri = [System.Uri]::new($RootUri, $response.nextLink)
-                $builder = [System.UriBuilder]::new($nextBaseUri)
-
-                $existingQuery = $builder.Query.TrimStart('?')
-
-                if ([string]::IsNullOrWhiteSpace($existingQuery)) {
-                    $builder.Query = $SearchQuery
-                } else {
-                    $builder.Query = "$existingQuery&$SearchQuery"
-                }
-
-                $URI = $builder.Uri
-            #    Write-Verbose "Fetching next page: $URI"
-            }
-
-        } while ($null -ne $URI)
-#>
-        [PSCustomObject]@{
-            value = $allAccounts.ToArray()
-            count = $allAccounts.Count
+            $baseEndpoint = [System.Uri]::new($RootUri, 'API/Accounts')
+            $uriBuilder = [System.UriBuilder]::new($baseEndpoint)
+            $uriBuilder.Query = $fullQuery
+            $targetUri = $uriBuilder.Uri
         }
+        else {
+            $targetUri = $nextUri
+        }
+
+        try {
+            if ($SkipCertificateCheck.IsPresent) { [System.Net.ServicePointManager]::ServerCertificateValidationCallback = { $true } }
+            Write-Verbose "Status: Get-Accounts | URI: $targetUri"
+            $response = Invoke-RestMethod -Uri $targetUri -Headers $Headers -Method Get
+        }
+        catch {
+            $errorMsg = if ($_.ErrorDetails) {
+                    $_.ErrorDetails.Message
+                } else {
+                    $_.Exception.Message
+                }
+            throw "Unexpected error communicating with $($targetUri): $errorMsg"
+        }
+        finally {
+            if ($SkipCertificateCheck.IsPresent) { [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null }
+        }
+        
+
+        $items = $response.value
+        $itemCount = if ($null -ne $items) { $items.Count } else { 0 }
+
+        if ($itemCount -gt 0) {
+            $allAccounts.AddRange([object[]]$items)
+            #$items | ForEach-Object { $_ }
+            #$totalStreamed += $itemCount
+        }
+
+        # 3. Dynamic API Bug Recovery Logic
+        if (-not [string]::IsNullOrWhiteSpace($response.nextLink)) {
+            # CASE 1 & 2: API provided nextLink. Check if search query was stripped.
+            $cleanNext  = $response.nextLink.TrimStart('/')
+            $parsedNext = [System.Uri]::new($RootUri, $cleanNext)
+            $builder    = [System.UriBuilder]::new($parsedNext)
+            $existingQ  = $builder.Query.TrimStart('?')
+
+            # If search criteria exist but are missing from nextLink, re-inject them
+            if ($searchQuery -and ($existingQ -notmatch '(search|filter|savedfilter)=')) {
+                $builder.Query = if ($existingQ) { "$existingQ&$searchQuery" } else { $searchQuery }
+            }
+
+            $nextUri = $builder.Uri
+            $offset += $itemCount
+        }
+        elseif ($itemCount -eq $Limit) {
+            # CASE 3: API bug omitted nextLink entirely, but record count matches page limit.
+            # Force manual offset iteration.
+            $offset += $Limit
+            $nextUri = $null # Triggers manual URI construction on next iteration
+        }
+        else {
+            # Reached end of dataset (itemCount < Limit and no nextLink)
+            $hasMorePages = $false
+        }
+
+        # Break loop if 0 records returned on a manual page check
+        if ($itemCount -eq 0) {
+            $hasMorePages = $false
+        }
+
+    } while ($hasMorePages)
+
+    [PSCustomObject]@{
+        value = $allAccounts.ToArray()
+        count = $allAccounts.Count
     }
-#    catch {
-#        $errorMsg = if ($_.ErrorDetails) {
-#            $_.ErrorDetails.Message
-#        } else {
-#            $_.Exception.Message
-#        }
-#        throw "Unexpected error communicating with $($URI): $errorMsg"
-#    }
-#    finally {
-#        if ($SkipCertificateCheck.IsPresent) { [System.Net.ServicePointManager]::ServerCertificateValidationCallback = $null }
-#    }
-#}
+}
 
 $pCloudBase = [System.Uri]::new("https://$subDomain.privilegecloud.cyberark.cloud")
 
@@ -352,33 +304,40 @@ $headers = @{
 
 $auth = $null
 
-#$retAccounts = Get-Accounts -rootURI $rootURI -headers $headers -SavedFilter DeleteInsightStatus
-$retAccounts = Get-Accounts -rootURI $rootURI -headers $headers -SavedFilter DisabledPasswordByUser
+$retAccounts = Get-Accounts -rootURI $rootURI -headers $headers -SavedFilter DeleteInsightStatus
 
 # Ensure payload structure matches expected contract
 if (-not $retAccounts.PSObject.Properties.Match('value').Count) {
     throw "Input payload does not contain a top-level 'value' array property."
 }
 
-# Stream processing pipeline: Constant O(1) memory overhead
+$scriptName = [System.IO.Path]::GetFileNameWithoutExtension($PSCommandPath)
+$timestamp = [DateTime]::Now.ToString('yyyyMMdd_HHmmss')
+$filename = '{0}_{1}.csv' -f $timestamp, $scriptName
+$outputDir = 'temp'
+$targetFilePath = [System.IO.Path]::Combine($outputDir, $fileName)
+
 $retAccounts.value | ForEach-Object {
     $item = $_
     $sec  = $item.secretManagement
 
     [PSCustomObject]@{
-        categoryModificationTime   = Protect-CsvField $item.categoryModificationTime
-        platformId                 = Protect-CsvField $item.platformId
-        safeName                   = Protect-CsvField $item.safeName
-        deleteInsightStatus        = Protect-CsvField $item.deleteInsightStatus
-        lastModifiedBy             = Protect-CsvField $item.lastModifiedBy
         id                         = Protect-CsvField $item.id
         name                       = Protect-CsvField $item.name
+        platformId                 = Protect-CsvField $item.platformId
+        safeName                   = Protect-CsvField $item.safeName
         address                    = Protect-CsvField $item.address
         userName                   = Protect-CsvField $item.userName
         secretType                 = Protect-CsvField $item.secretType
+        lastModifiedBy             = Protect-CsvField $item.lastModifiedBy
+        deleteInsightStatus        = Protect-CsvField $item.deleteInsightStatus
         automaticManagementEnabled = Protect-CsvField $sec.automaticManagementEnabled
         manualManagementReason     = Protect-CsvField $sec.manualManagementReason
-        lastModifiedTime           = Protect-CsvField $sec.lastModifiedTime
-        createdTime                = Protect-CsvField $item.createdTime
+        status                     = Protect-CsvField $sec.status
+        lastModifiedTime           = Protect-CsvField (ConvertFrom-Epoch $sec.lastModifiedTime)
+        lastReconciledTime         = Protect-CsvField (ConvertFrom-Epoch $sec.lastReconciledTime)
+        lastVerifiedTime           = Protect-CsvField (ConvertFrom-Epoch $sec.lastVerifiedTime)
+        createdTime                = Protect-CsvField (ConvertFrom-Epoch $item.createdTime)
+        categoryModificationTime   = Protect-CsvField (ConvertFrom-Epoch $item.categoryModificationTime)
     }
-} | Export-Csv -LiteralPath "temp\disabled-accounts.csv" -NoTypeInformation -Encoding utf8
+} | Export-Csv -LiteralPath $targetFilePath -NoTypeInformation -Encoding utf8
