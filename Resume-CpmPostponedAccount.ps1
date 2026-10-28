@@ -361,7 +361,7 @@ function Resume-IdiraAccount {
 
     )
     
-    $SearchAccountPattern = "(?:^.*$Safe-|^[^-]+-)(?<Target>.+)-SHSAdmin$"
+    $SearchAccountPattern = "(?:^.*-|^[^-]+-)(?<Target>.+)-SHSAdmin$"
 
     $enAccountBody = ConvertTo-Json -InputObject (,@{
         op    = "replace"
@@ -395,6 +395,10 @@ function Resume-IdiraAccount {
             }
             catch {
                 Write-Log "Failed to resume the account '$($account.name)' - '$($account.Id)'. Details: $($_.Exception.Message)" ERROR
+                if ($_.ErrorDetails.Message) {
+                    $ErrorDetails = Convertfrom-Json $_.ErrorDetails -ErrorAction SilentlyContinue
+                    Write-Log "Further Details: '$($ErrorDetails.ErrorCode)' - '$($ErrorDetails.ErrorMessage)'." ERROR
+                }
             }
         } else {
             Write-Log "Account '$($account.name)' is Active, Resume not needed." WARN
