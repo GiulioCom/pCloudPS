@@ -130,14 +130,13 @@ function Connect-Identity {
         [securestring]$password
     )
 
-    $currentEndpoint = [System.Uri]::new("https://$subDomain.cyberark.cloud/shell/api/endpoint/$subDomain")
+    $currentEndpoint = [System.Uri]::new("https://platform-discovery.cyberark.cloud/api/identity-endpoint/$subDomain")
     Write-Verbose "Status: Connect-Identity | currentEndpoint: $currentEndpoint"
-    
-    $identityAddress = (Invoke-RestMethod -URI $currentEndpoint -Method GET).fqdn
+    $identityAddress = (Invoke-RestMethod -URI $currentEndpoint -Method GET).endpoint
     Write-Verbose "Status: Connect-Identity | identityAddress: $identityAddress"
 
     try {
-        $URI = [System.Uri]::new("https://$identityAddress/oauth2/platformtoken")
+        $URI = [System.Uri]::new("$identityAddress/oauth2/platformtoken")
         Write-Verbose "Status: Connect-Identity | URI: $URI"
         $Body = "grant_type=client_credentials&client_id=$username&client_secret=$([System.Net.NetworkCredential]::new('', $password).Password)"
 
