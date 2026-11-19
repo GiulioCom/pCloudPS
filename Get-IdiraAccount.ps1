@@ -311,6 +311,9 @@ if (-not $retAccounts.PSObject.Properties.Match('value').Count) {
     throw "Input payload does not contain a top-level 'value' array property."
 }
 
+$OutputHeaders = [System.Collections.Generic.HashSet[string]]::new()
+$OutputRecords = [System.Collections.Generic.List[System.Collections.IDictionary]]::new()
+
 $scriptName = [System.IO.Path]::GetFileNameWithoutExtension($PSCommandPath)
 $timestamp = [DateTime]::Now.ToString('yyyyMMdd_HHmmss')
 $filename = '{0}_{1}.csv' -f $timestamp, $scriptName
@@ -318,26 +321,44 @@ $outputDir = 'temp'
 $targetFilePath = [System.IO.Path]::Combine($outputDir, $fileName)
 
 $retAccounts.value | ForEach-Object {
-    $item = $_
-    $sec  = $item.secretManagement
+    $row = [ordered]@{}
 
-    [PSCustomObject]@{
-        id                         = Protect-CsvField $item.id
-        name                       = Protect-CsvField $item.name
-        platformId                 = Protect-CsvField $item.platformId
-        safeName                   = Protect-CsvField $item.safeName
-        address                    = Protect-CsvField $item.address
-        userName                   = Protect-CsvField $item.userName
-        secretType                 = Protect-CsvField $item.secretType
-        lastModifiedBy             = Protect-CsvField $item.lastModifiedBy
-        deleteInsightStatus        = Protect-CsvField $item.deleteInsightStatus
-        automaticManagementEnabled = Protect-CsvField $sec.automaticManagementEnabled
-        manualManagementReason     = Protect-CsvField $sec.manualManagementReason
-        status                     = Protect-CsvField $sec.status
-        lastModifiedTime           = Protect-CsvField (ConvertFrom-Epoch $sec.lastModifiedTime)
-        lastReconciledTime         = Protect-CsvField (ConvertFrom-Epoch $sec.lastReconciledTime)
-        lastVerifiedTime           = Protect-CsvField (ConvertFrom-Epoch $sec.lastVerifiedTime)
-        createdTime                = Protect-CsvField (ConvertFrom-Epoch $item.createdTime)
-        categoryModificationTime   = Protect-CsvField (ConvertFrom-Epoch $item.categoryModificationTime)
+    foreach ($prop in $_.PSObject.Properties) {
+        # Unpack nested objects (e.g. secretManagement, platformAccountProperties)
+        if ($prop.Value -is [System.Management.Automation.PSCustomObject]) {
+            foreach ($sub in $prop.Value.PSObject.Properties) {
+                $col = "$($prop.Name)_$($sub.Name)"
+                $val = $sub.Value
+
+                if ($col -match 'Time' -and $val) { 
+                    $val = ConvertFrom-Epoch $val
+                }
+                $row[$col] = Protect-CsvField $val
+                $null = $OutputHeaders.Add($col)
+            }
+        } else {
+            $col = $prop.Name
+            $val = $prop.Value
+
+            if ($col -match 'Time' -and $val) {
+                $val = ConvertFrom-Epoch $val
+            }
+            $row[$col] = Protect-CsvField $val
+            $null = $OutputHeaders.Add($col)
+        }
     }
+    $OutputRecords.Add($row)
+}
+
+Write-Host "Saving result to '$targetFilePath'..."
+# Align rows to the complete header union and stream directly to disk
+$OutputRecords | ForEach-Object {
+    $row = $_
+    $out = [ordered]@{}
+
+    foreach ($header in $OutputHeaders) {
+        $out[$header] = if ($row.Contains($header)) { $row[$header] } else { '' }
+    }
+
+    [PSCustomObject]$out
 } | Export-Csv -LiteralPath $targetFilePath -NoTypeInformation -Encoding utf8

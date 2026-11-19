@@ -1,17 +1,22 @@
-[CmdletBinding()]
+[CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'High')]
 param(
     [Parameter(Mandatory=$true)]
     [ValidateNotNullOrEmpty()]
     [string]$Username,
 
     [Parameter(Mandatory=$true)]
-    [ValidatePattern('^[a-zA-Z0-9-]+$')]
+    [ValidatePattern('\A[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\z')]
     [string]$subDomain,
     
     [Parameter(Mandatory=$true)]
-    [string]$CSVPath,
-
-    [switch]$DryRun,
+    [ValidateNotNullOrEmpty()]
+    [ValidateScript({
+        if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) {
+            throw "CSV file not found at literal path: '$_'."
+        }
+        $true
+    })]    
+    [string]$CsvFilePath,
 
     [Parameter(HelpMessage = "Enable logging to file")]
     [switch]$log,
@@ -93,10 +98,9 @@ function Connect-Identity {
     .SYNOPSIS
         Authenticates to CyberArk Identity using Client Credentials to obtain an OAuth2 token.
     #>
-    [CmdletBinding()]
     param (
         [Parameter(Mandatory=$true)]
-        [ValidatePattern('^[a-zA-Z0-9-]+$')]
+        [ValidatePattern('\A[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\z')]
         [string]$subDomain,    
         
         [Parameter(Mandatory=$true)]
@@ -106,21 +110,19 @@ function Connect-Identity {
         [securestring]$password
     )
 
-    $currentEndpoint = [System.Uri]::new("https://platform-discovery.cyberark.cloud/api/identity-endpoint/$subDomain")
-    Write-Verbose "Status: Connect-Identity | currentEndpoint: $currentEndpoint"
-    $identityAddress = (Invoke-RestMethod -URI $currentEndpoint -Method GET).endpoint
-    Write-Verbose "Status: Connect-Identity | identityAddress: $identityAddress"
-
     try {
-        $URI = [System.Uri]::new("$identityAddress/oauth2/platformtoken")
-        Write-Verbose "Status: Connect-Identity | URI: $URI"
-        $Body = "grant_type=client_credentials&client_id=$username&client_secret=$([System.Net.NetworkCredential]::new('', $password).Password)"
-
-        Invoke-RestMethod -URI $URI -Method Post -Body $Body
-
+        $IdentityUri = (Invoke-RestMethod -URI "https://platform-discovery.cyberark.cloud/api/identity-endpoint/$subDomain" -Method GET).endpoint
     }
     catch {
-        throw "Unexpected error from $($URI): $($_.Exception.Message) - $($_.ErrorDetails.Message)"
+        throw "Identity Discovery error: $($_.Exception.Message) - $($_.ErrorDetails.Message)"
+    }
+
+    try {
+        $Body = "grant_type=client_credentials&client_id=$username&client_secret=$([System.Net.NetworkCredential]::new('', $password).Password)"
+        Invoke-RestMethod -URI "$IdentityUri/oauth2/platformtoken" -Method Post -Body $Body 
+    }
+    catch {
+        throw "Authentication error: $($_.Exception.Message) - $($_.ErrorDetails.Message)"
     }
 }
 
@@ -161,42 +163,35 @@ Write-Host "Authenticating to $($pCloudBase.AbsoluteUri)..." -ForegroundColor Gr
 
 $Password = Read-Host "Enter Password for $Username" -AsSecureString
 
-$auth = Connect-Identity -subDomain $subDomain -userName $Username -password $Password
+$AuthResponse = Connect-Identity -subDomain $subDomain -userName $Username -password $Password
 
 $Password.Dispose()
 $Password = $null
 
-$rootURI = [System.Uri]::new($pCloudBase, "PasswordVault/")
+$PvwaUri = [System.Uri]::new($pCloudBase, "PasswordVault/")
 
-$headers = @{
-    "Authorization" = "$($auth.token_type) $($auth.access_token)"
-    "Content-Type"  = "application/json"
-}
+$pCloudSession = [Microsoft.PowerShell.Commands.WebRequestSession]::new()
+$pCloudSession.MaximumRedirection = 0
+$pCloudSession.Headers['Authorization'] = "$($authResponse.token_type) $($authResponse.access_token)"
+$pCloudSession.Headers['Accept']        = 'application/json'
 
-$auth = $null
+$authResponse = $null
 
-# Import CSV
-if (-Not (Test-Path $CSVPath)) {
-    Write-Error "CSV file not found: $CSVPath"
-    exit
-}
+Write-Log "Processing file '$CsvFilePath'..." INFO
 
-$Accounts = Import-Csv $CSVPath
+Import-Csv -LiteralPath $CsvFilePath | ForEach-Object {
+    $AccountName = $_.name
+    $AccountId = $_.id.trim()
+    $SafeName = $_.SafeName
+
+    $DeleteUri = [System.Uri]::new($PvwaUri, "API/Accounts/$AccountID")
  
-# Process accounts
-foreach ($Account in $Accounts) {
-    $SafeName = $Account.SafeName
-    $AccountID = $Account.AccountID.trim()
-    $DeleteURL = [System.Uri]::new($rootURI, "API/Accounts/$AccountID")
- 
-    if ($DryRun) {
-        Write-Log "[DRY-RUN] Would delete Account: $AccountID from Safe: $SafeName" INFO
-    } else {
+    if ($PSCmdlet.ShouldProcess("Account '$AccountName' ('$AccountId') in Safe '$SafeName'", 'DELETE')) {
         try {
-            Invoke-RestMethod -Uri $DeleteURL -Method Delete -Headers $Headers
-            Write-Log "Deleted Account: $AccountID from Safe: $SafeName" INFO
+            Invoke-RestMethod -Uri $DeleteUri -Method Delete -WebSession $pCloudSession
+            Write-Log "Deleted Account: $AccountId from Safe: $SafeName" INFO
         } catch {
-            Write-Log "Failed to delete Account: $AccountID from Safe: $SafeName - $_" WARN
+            Write-Log "Failed to delete Account: $AccountId from Safe: $SafeName - $_" WARN
         }
     }
 }
