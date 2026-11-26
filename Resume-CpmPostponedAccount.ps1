@@ -133,10 +133,9 @@ function Connect-Identity {
     .SYNOPSIS
         Authenticates to CyberArk Identity using Client Credentials to obtain an OAuth2 token.
     #>
-    [CmdletBinding()]
     param (
         [Parameter(Mandatory=$true)]
-        [ValidatePattern('^[a-zA-Z0-9-]+$')]
+        [ValidatePattern('\A[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\z')]
         [string]$subDomain,    
         
         [Parameter(Mandatory=$true)]
@@ -146,21 +145,19 @@ function Connect-Identity {
         [securestring]$password
     )
 
-    $currentEndpoint = [System.Uri]::new("https://platform-discovery.cyberark.cloud/api/identity-endpoint/$subDomain")
-    Write-Verbose "Status: Connect-Identity | currentEndpoint: $currentEndpoint"
-    $identityAddress = (Invoke-RestMethod -URI $currentEndpoint -Method GET).endpoint
-    Write-Verbose "Status: Connect-Identity | identityAddress: $identityAddress"
-
     try {
-        $URI = [System.Uri]::new("$identityAddress/oauth2/platformtoken")
-        Write-Verbose "Status: Connect-Identity | URI: $URI"
-        $Body = "grant_type=client_credentials&client_id=$username&client_secret=$([System.Net.NetworkCredential]::new('', $password).Password)"
-
-        Invoke-RestMethod -URI $URI -Method Post -Body $Body
-
+        $IdentityUri = (Invoke-RestMethod -URI "https://platform-discovery.cyberark.cloud/api/identity-endpoint/$subDomain" -Method GET).endpoint
     }
     catch {
-        throw "Unexpected error from $($URI): $($_.Exception.Message) - $($_.ErrorDetails.Message)"
+        throw "Identity Discovery error: $($_.Exception.Message) - $($_.ErrorDetails.Message)"
+    }
+
+    try {
+        $Body = "grant_type=client_credentials&client_id=$username&client_secret=$([System.Net.NetworkCredential]::new('', $password).Password)"
+        Invoke-RestMethod -URI "$IdentityUri/oauth2/platformtoken" -Method Post -Body $Body 
+    }
+    catch {
+        throw "Authentication error: $($_.Exception.Message) - $($_.ErrorDetails.Message)"
     }
 }
 
